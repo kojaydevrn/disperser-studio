@@ -23,15 +23,28 @@ const port = process.env.PORT || 5001;
 
 // YT-DLP Cross-platform Helper
 const cookiesPath = path.resolve(__dirname, '../cookies.txt');
-const hasCookies = fs.existsSync(cookiesPath);
+let activeCookiesPath = fs.existsSync(cookiesPath) ? cookiesPath : null;
 
+// --- Handle YT_COOKIES from Env Var ---
+if (process.env.YT_COOKIES) {
+  try {
+    const tempCookiesPath = path.join(os.tmpdir(), `cookies-${Date.now()}.txt`);
+    fs.writeFileSync(tempCookiesPath, process.env.YT_COOKIES);
+    activeCookiesPath = tempCookiesPath;
+    console.log('🍪 Cookies loaded from environment variable (YT_COOKIES)');
+  } catch (err) {
+    console.error('❌ Failed to write temporary cookies file:', err);
+  }
+}
+
+const hasCookies = !!activeCookiesPath;
 const ytProxy = process.env.YT_PROXY;
 
 const ytConfig = {
   executable: os.platform() === 'win32' ? 'yt-dlp' : (process.env.YT_DLP_PATH || 'yt-dlp'),
   baseArgs: [
     '--no-check-certificates',
-    ...(hasCookies ? ['--cookies', cookiesPath] : []),
+    ...(hasCookies ? ['--cookies', activeCookiesPath] : []),
     ...(ytProxy ? ['--proxy', ytProxy] : []),
     ...(os.platform() !== 'win32' ? ['--force-ipv4'] : [])
   ]
@@ -40,7 +53,7 @@ const ytConfig = {
 if (hasCookies) {
   console.log('🍪 Cookies detected and will be used for YT-DLP');
 } else {
-  console.log('🍪 Cookies NOT found at:', cookiesPath);
+  console.log('🍪 Cookies NOT found. Download might be restricted by YouTube.');
 }
 
 // Initialize Supabase
@@ -471,13 +484,8 @@ app.post('/api/youtube/download', async (req, res) => {
         url
       ];
 
-      // Update cookies path to temp one if created
-      if (tempCookiesPath) {
-        const idx = finalArgs.indexOf('--cookies');
-        if (idx !== -1) {
-          finalArgs[idx + 1] = tempCookiesPath;
-        }
-      }
+      // Update cookies path if it's already in baseArgs, or add it here if needed
+      // (baseArgs already handles it via activeCookiesPath)
 
       execFile(ytConfig.executable, finalArgs, { timeout: 180000 }, (err, stdout, stderr) => {
         // Cleanup temp cookies
@@ -486,9 +494,11 @@ app.post('/api/youtube/download', async (req, res) => {
         }
         
         if (err) {
-          console.error('yt-dlp error:', stderr);
+          console.error('❌ YT-DLP Exec Error:', err);
+          console.error('❌ YT-DLP Stderr:', stderr);
           reject(new Error(stderr || err.message));
         } else {
+          console.log('✅ YT-DLP Success Stdout:', stdout);
           resolve(undefined);
         }
       });
@@ -502,7 +512,9 @@ app.post('/api/youtube/download', async (req, res) => {
       if (mp3File) {
         actualFile = path.join(tmpDir, mp3File);
       } else {
-        throw new Error('MP3 conversion failed - no output file found');
+        const availableFiles = fs.readdirSync(tmpDir);
+        console.error('❌ MP3 file not found. Available files in tmp:', availableFiles);
+        throw new Error(`MP3 conversion failed - no output file found. Found: ${availableFiles.join(', ') || 'nothing'}`);
       }
     }
 
