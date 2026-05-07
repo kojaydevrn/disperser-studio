@@ -12,6 +12,8 @@ import http from 'http';
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import ws from 'ws';
+// @ts-ignore
+global.WebSocket = ws;
 import { initBot, getBotClient } from './bot';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
@@ -49,11 +51,7 @@ if (!supabaseUrl || !supabaseKey) {
   console.error('❌ CRITICAL: VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY is missing in environment variables!');
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  realtime: {
-    websocket: ws,
-  },
-});
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Initialize Discord Bot
 initBot(supabase);
