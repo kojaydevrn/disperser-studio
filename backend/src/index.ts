@@ -383,12 +383,18 @@ app.get('/api/roblox/operation/:id', async (req, res) => {
   const { apiKey } = req.query;
   const { id } = req.params;
   try {
+    const trimmedKey = (apiKey as string)?.trim();
     const response = await fetch(`https://apis.roblox.com/assets/v1/operations/${id}`, {
-      headers: { 'x-api-key': apiKey }
+      headers: { 'x-api-key': trimmedKey }
     });
     const data = await response.json();
+    
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, error: data.message || 'Roblox Operation Error', details: data });
+    }
+    
     res.json({ success: true, operation: data });
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -397,12 +403,18 @@ app.get('/api/roblox/asset/:id', async (req, res) => {
   const { apiKey } = req.query;
   const { id } = req.params;
   try {
+    const trimmedKey = (apiKey as string)?.trim();
     const response = await fetch(`https://apis.roblox.com/assets/v1/assets/${id}`, {
-      headers: { 'x-api-key': apiKey }
+      headers: { 'x-api-key': trimmedKey }
     });
     const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({ success: false, error: data.message || 'Roblox Asset Error', details: data });
+    }
+
     res.json({ success: true, metadata: data });
-  } catch (error) {
+  } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
