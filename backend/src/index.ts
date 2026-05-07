@@ -480,13 +480,12 @@ app.post('/api/youtube/download', async (req, res) => {
     await new Promise((resolve, reject) => {
       const finalArgs = [
         ...finalBaseArgs,
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        '--extractor-args', 'youtube:player_client=tv,web',
+        '--user-agent', 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        '--extractor-args', 'youtube:player_client=android,web',
         '--add-header', 'Accept-Language: en-US,en;q=0.5',
-        '--add-header', 'Sec-Fetch-Mode: navigate',
         '--rm-cache-dir',
         '--no-check-certificates',
-        '--format', 'bestaudio/best',
+        '--format', 'ba*/bestaudio/best', // Ambil audio apa saja yang tersedia
         '--ffmpeg-location', os.platform() === 'win32' ? 'ffmpeg' : (process.env.FFMPEG_PATH || 'ffmpeg'),
         '-x',
         '--audio-format', 'mp3',
