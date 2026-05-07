@@ -61,13 +61,20 @@ const getYtBaseArgs = () => {
     }
   }
 
+  const args = [
+    '--no-check-certificates',
+    '--no-warnings',
+    '--force-ipv4',
+    '--sleep-requests', '1',
+    '--add-header', 'Accept-Language: en-US,en;q=0.9',
+    // Improved bypass strategy
+    '--extractor-args', 'youtube:player_client=android,web;player_skip=web_creator',
+    ...(currentCookiesPath ? ['--cookies', currentCookiesPath] : []),
+    ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [])
+  ];
+
   return {
-    args: [
-      '--no-check-certificates',
-      ...(currentCookiesPath ? ['--cookies', currentCookiesPath] : []),
-      ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : []),
-      ...(os.platform() !== 'win32' ? ['--force-ipv4'] : [])
-    ],
+    args,
     tempFile: currentCookiesPath && currentCookiesPath.includes('cookies-dl-') ? currentCookiesPath : null
   };
 };
@@ -430,10 +437,8 @@ app.get('/api/youtube/info', async (req, res) => {
     const result = await new Promise((resolve, reject) => {
       execFile(ytConfig.executable, [
         ...args,
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         '--print', '%(title)s',
         '--no-download',
-        '--no-warnings',
         url
       ], { timeout: 15000 }, (err, stdout, stderr) => {
         if (tempFile) try { fs.unlinkSync(tempFile); } catch (e) { }
@@ -464,13 +469,11 @@ app.post('/api/youtube/download', async (req, res) => {
     const info: any = await new Promise((resolve) => {
       execFile(ytConfig.executable, [
         ...finalBaseArgs,
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         '--print', '%(title)s',
         '--print', '%(duration)s',
         '--no-download',
-        '--no-warnings',
         url
-      ], { timeout: 15000 }, (err, stdout) => {
+      ], { timeout: 20000 }, (err, stdout) => {
         const urlObj = new URL(url);
         const videoId = urlObj.searchParams.get('v') || url.split('/').pop() || 'audio';
 
@@ -492,12 +495,7 @@ app.post('/api/youtube/download', async (req, res) => {
     await new Promise((resolve, reject) => {
       const finalArgs = [
         ...finalBaseArgs,
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        '--extractor-args', 'youtube:player_client=web_creator,android_vr',
-        '--add-header', 'Accept-Language: en-US,en;q=0.9',
-        '--sleep-requests', '1',
         '--rm-cache-dir',
-        '--no-check-certificates',
         '--format', 'ba*/bestaudio/best',
         '--ffmpeg-location', os.platform() === 'win32' ? 'ffmpeg' : (process.env.FFMPEG_PATH || 'ffmpeg'),
         '-x',
