@@ -41,10 +41,14 @@ if (hasCookies) {
 }
 
 // Initialize Supabase
-const supabase = createClient(
-  process.env.VITE_SUPABASE_URL || "",
-  process.env.VITE_SUPABASE_ANON_KEY || "" // Note: In production, use SERVICE_ROLE_KEY for backend operations
-);
+const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
+const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || "";
+
+if (!supabaseUrl || !supabaseKey) {
+  console.error('❌ CRITICAL: VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY is missing in environment variables!');
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Initialize Discord Bot
 initBot(supabase);
