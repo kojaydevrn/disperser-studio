@@ -40,6 +40,38 @@ if (process.env.YT_COOKIES) {
   console.log('⚠️ No cookie-related variables found at all!');
 }
 
+const ytConfig = {
+  executable: os.platform() === 'win32' ? 'yt-dlp' : (process.env.YT_DLP_PATH || 'yt-dlp')
+};
+
+// Helper to get base args with dynamic cookies
+const getYtBaseArgs = () => {
+  let currentCookiesPath = null;
+  const localCookies = path.resolve(__dirname, '../cookies.txt');
+  
+  if (fs.existsSync(localCookies)) {
+    currentCookiesPath = localCookies;
+  } else if (process.env.YT_COOKIES) {
+    try {
+      const tempPath = path.join(os.tmpdir(), `cookies-dl-${Date.now()}.txt`);
+      fs.writeFileSync(tempPath, process.env.YT_COOKIES);
+      currentCookiesPath = tempPath;
+    } catch (e) {
+      console.error('Failed to write dynamic cookies:', e);
+    }
+  }
+
+  return {
+    args: [
+      '--no-check-certificates',
+      ...(currentCookiesPath ? ['--cookies', currentCookiesPath] : []),
+      ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : []),
+      ...(os.platform() !== 'win32' ? ['--force-ipv4'] : [])
+    ],
+    tempFile: currentCookiesPath && currentCookiesPath.includes('cookies-dl-') ? currentCookiesPath : null
+  };
+};
+
 // Initialize Supabase
 const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
 const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || "";
@@ -382,15 +414,17 @@ app.get('/api/youtube/info', async (req, res) => {
   if (!url) return res.status(400).json({ success: false, error: 'URL required' });
 
   try {
+    const { args, tempFile } = getYtBaseArgs();
     const result = await new Promise((resolve, reject) => {
       execFile(ytConfig.executable, [
-        ...finalBaseArgs,
+        ...args,
         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         '--print', '%(title)s',
         '--no-download',
         '--no-warnings',
         url
       ], { timeout: 15000 }, (err, stdout, stderr) => {
+        if (tempFile) try { fs.unlinkSync(tempFile); } catch (e) { }
         if (err) reject(new Error(stderr || err.message));
         else resolve(stdout.trim());
       });
@@ -412,27 +446,7 @@ app.post('/api/youtube/download', async (req, res) => {
 
   try {
     // Step 0: Handle Dynamic Cookies
-    let currentCookiesPath = null;
-    const localCookies = path.resolve(__dirname, '../cookies.txt');
-    if (fs.existsSync(localCookies)) {
-      currentCookiesPath = localCookies;
-    } else if (process.env.YT_COOKIES) {
-      try {
-        const tempPath = path.join(os.tmpdir(), `cookies-dl-${Date.now()}.txt`);
-        fs.writeFileSync(tempPath, process.env.YT_COOKIES);
-        currentCookiesPath = tempPath;
-        console.log('🍪 Using dynamic cookies from YT_COOKIES env var');
-      } catch (e) {
-        console.error('Failed to write dynamic cookies:', e);
-      }
-    }
-
-    const finalBaseArgs = [
-      '--no-check-certificates',
-      ...(currentCookiesPath ? ['--cookies', currentCookiesPath] : []),
-      ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : []),
-      ...(os.platform() !== 'win32' ? ['--force-ipv4'] : [])
-    ];
+    const { args: finalBaseArgs, tempFile: currentCookiesPath } = getYtBaseArgs();
 
     // Step 1: Get title and duration
     const info: any = await new Promise((resolve) => {
