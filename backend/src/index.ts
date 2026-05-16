@@ -863,7 +863,7 @@ app.post('/api/youtube/download', async (req, res) => {
       });
     });
 
-    const title = info.title;
+    let title = info.title;
     console.log(`🎵 Video title: "${title}"`);
 
     // Step 2: Try download with multiple strategies
@@ -918,6 +918,30 @@ app.post('/api/youtube/download', async (req, res) => {
             const availableFiles = fs.readdirSync(tmpDir);
             console.error('❌ MP3 file not found. Available files in tmp:', availableFiles);
             throw new Error(`MP3 conversion failed - no output file found. Found: ${availableFiles.join(', ') || 'nothing'}`);
+          }
+        }
+
+        // If title is still a fallback, try fetching it with the SAME strategy that worked
+        if (title.startsWith('YouTube Audio (')) {
+          console.log(`🔄 Fetching title with successful strategy: "${strategy.name}"`);
+          const fetchedTitle: string = await new Promise((resolve) => {
+            execFile(ytConfig.executable, [
+              ...strategy.args,
+              '--print', '%(title)s',
+              '--no-download',
+              url
+            ], { timeout: 15000 }, (err, stdout) => {
+              if (err) {
+                resolve('');
+              } else {
+                resolve(stdout.trim().split('\n')[0]?.trim() || '');
+              }
+            });
+          });
+
+          if (fetchedTitle && fetchedTitle !== 'NA' && !fetchedTitle.startsWith('ERROR')) {
+            title = fetchedTitle;
+            console.log(`🎵 Got title from download strategy: "${title}"`);
           }
         }
 
