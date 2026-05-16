@@ -44,49 +44,75 @@ const ytConfig = {
   executable: os.platform() === 'win32' ? 'yt-dlp' : (process.env.YT_DLP_PATH || 'yt-dlp')
 };
 
-// Helper to get base args with dynamic cookies
-const getYtBaseArgs = () => {
-  let currentCookiesPath = null;
-  let rawCookieString = null;
+// Helper to resolve cookies path (for local dev only; skipped on datacenter/production)
+const resolveCookiesPath = (): string | null => {
   const localCookies = path.resolve(__dirname, '../cookies.txt');
-  
+
+  // On production/datacenter, cookies get invalidated by YouTube instantly — skip them
+  if (process.env.NODE_ENV === 'production') {
+    console.log('🏭 Production mode: skipping cookies (datacenter IPs invalidate them)');
+    return null;
+  }
+
   if (process.env.YT_COOKIES) {
-    if (process.env.YT_COOKIES.includes('# Netscape HTTP Cookie File') || process.env.YT_COOKIES.includes('curl.haxx.se') || process.env.YT_COOKIES.includes('\tTRUE\t')) {
+    const val = process.env.YT_COOKIES;
+    if (val.includes('# Netscape HTTP Cookie File') || val.includes('curl.haxx.se') || val.includes('\tTRUE\t')) {
       try {
         const tempPath = path.join(os.tmpdir(), `cookies-dl-${Date.now()}.txt`);
-        fs.writeFileSync(tempPath, process.env.YT_COOKIES.replace(/\\n/g, '\n'));
-        currentCookiesPath = tempPath;
+        fs.writeFileSync(tempPath, val.replace(/\\n/g, '\n'));
+        return tempPath;
       } catch (e) {
         console.error('Failed to write dynamic cookies:', e);
       }
-    } else {
-      rawCookieString = process.env.YT_COOKIES;
     }
   } else if (fs.existsSync(localCookies)) {
     const content = fs.readFileSync(localCookies, 'utf-8');
     if (content.includes('# Netscape HTTP Cookie File') || content.includes('curl.haxx.se') || content.includes('\tTRUE\t')) {
-      currentCookiesPath = localCookies;
-    } else {
-      rawCookieString = content.trim();
+      return localCookies;
     }
   }
+  return null;
+};
 
+// Build yt-dlp download strategies — tried in order until one succeeds
+const getDownloadStrategies = () => {
+  const cookiesPath = resolveCookiesPath();
+  const cookiesArgs = cookiesPath ? ['--cookies', cookiesPath] : [];
+  const proxyArgs = process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [];
+
+  const baseArgs = [
+    '--no-check-certificates',
+    '--force-ipv4',
+    '--sleep-requests', '1',
+    '--add-header', 'Accept-Language: en-US,en;q=0.9',
+    ...proxyArgs,
+  ];
+
+  return [
+    // Strategy 1: yt-dlp defaults (most maintained path, auto-selects best client)
+    { name: 'default', args: [...baseArgs, ...cookiesArgs] },
+    // Strategy 2: android_vr (no PO token needed, no DRM)
+    { name: 'android_vr', args: [...baseArgs, '--extractor-args', 'youtube:player_client=android_vr'] },
+    // Strategy 3: mweb fallback (usually gives format 18 at least)
+    { name: 'mweb', args: [...baseArgs, '--extractor-args', 'youtube:player_client=mweb'] },
+  ];
+};
+
+// Legacy helper for /api/youtube/info (simple, non-critical)
+const getYtBaseArgs = () => {
+  const cookiesPath = resolveCookiesPath();
   const args = [
     '--no-check-certificates',
     '--no-warnings',
     '--force-ipv4',
     '--sleep-requests', '1',
     '--add-header', 'Accept-Language: en-US,en;q=0.9',
-    ...(rawCookieString ? ['--add-header', `Cookie: ${rawCookieString}`] : []),
-    // Use android_vr client which bypasses PO Token checks and DRM on datacenter IPs perfectly
-    '--extractor-args', 'youtube:player_client=android_vr',
-    ...(currentCookiesPath ? ['--cookies', currentCookiesPath] : []),
+    ...(cookiesPath ? ['--cookies', cookiesPath] : []),
     ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [])
   ];
-
   return {
     args,
-    tempFile: currentCookiesPath && currentCookiesPath.includes('cookies-dl-') ? currentCookiesPath : null
+    tempFile: cookiesPath && cookiesPath.includes('cookies-dl-') ? cookiesPath : null
   };
 };
 
@@ -471,15 +497,16 @@ app.post('/api/youtube/download', async (req, res) => {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disperser-'));
   const outputFile = path.join(tmpDir, 'audio.mp3');
+  const ffmpegLocation = os.platform() === 'win32'
+    ? 'ffmpeg'
+    : (process.env.FFMPEG_PATH || (fs.existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg'));
 
   try {
-    // Step 0: Handle Dynamic Cookies
-    const { args: finalBaseArgs, tempFile: currentCookiesPath } = getYtBaseArgs();
-
-    // Step 1: Get title and duration
+    // Step 1: Get title (best-effort, non-blocking)
     const info: any = await new Promise((resolve) => {
+      const { args } = getYtBaseArgs();
       execFile(ytConfig.executable, [
-        ...finalBaseArgs,
+        ...args,
         '--print', '%(title)s',
         '--print', '%(duration)s',
         '--no-download',
@@ -502,13 +529,26 @@ app.post('/api/youtube/download', async (req, res) => {
 
     const title = info.title;
 
-    // Step 2: Download and convert to MP3
-    await new Promise((resolve, reject) => {
-      const finalArgs = [
-        ...finalBaseArgs,
+    // Step 2: Try download with multiple strategies
+    const strategies = getDownloadStrategies();
+    let lastError = '';
+
+    for (const strategy of strategies) {
+      // Clean up any previous attempt's files
+      try {
+        const prevFiles = fs.readdirSync(tmpDir);
+        for (const f of prevFiles) {
+          fs.unlinkSync(path.join(tmpDir, f));
+        }
+      } catch {}
+
+      console.log(`🔄 Trying download strategy: "${strategy.name}" for ${url}`);
+
+      const downloadArgs = [
+        ...strategy.args,
         '--rm-cache-dir',
         '--format', 'bestaudio/best/ba/b',
-        '--ffmpeg-location', os.platform() === 'win32' ? 'ffmpeg' : (process.env.FFMPEG_PATH || (fs.existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg')),
+        '--ffmpeg-location', ffmpegLocation,
         '-x',
         '--audio-format', 'mp3',
         '--audio-quality', '0',
@@ -517,54 +557,65 @@ app.post('/api/youtube/download', async (req, res) => {
         url
       ];
 
-      execFile(ytConfig.executable, finalArgs, { timeout: 180000 }, (err, stdout, stderr) => {
-        // Cleanup dynamic cookies file if created
-        if (currentCookiesPath && currentCookiesPath.includes('cookies-dl-')) {
-          try { fs.unlinkSync(currentCookiesPath); } catch (e) { }
-        }
-
-        if (err) {
-          console.error('❌ YT-DLP Exec Error:', err);
-          console.error('❌ YT-DLP Stderr:', stderr);
-          reject(new Error(stderr || err.message));
-        } else {
-          console.log('✅ YT-DLP Success Stdout:', stdout);
-          resolve(undefined);
-        }
+      const result: { success: boolean; error?: string; stdout?: string } = await new Promise((resolve) => {
+        execFile(ytConfig.executable, downloadArgs, { timeout: 180000 }, (err, stdout, stderr) => {
+          if (err) {
+            console.error(`❌ Strategy "${strategy.name}" failed:`, stderr || err.message);
+            resolve({ success: false, error: stderr || err.message });
+          } else {
+            console.log(`✅ Strategy "${strategy.name}" succeeded`);
+            resolve({ success: true, stdout });
+          }
+        });
       });
-    });
 
-    // Find the actual output file
-    let actualFile = outputFile;
-    if (!fs.existsSync(actualFile)) {
-      const files = fs.readdirSync(tmpDir);
-      const mp3File = files.find(f => f.endsWith('.mp3'));
-      if (mp3File) {
-        actualFile = path.join(tmpDir, mp3File);
-      } else {
-        const availableFiles = fs.readdirSync(tmpDir);
-        console.error('❌ MP3 file not found. Available files in tmp:', availableFiles);
-        throw new Error(`MP3 conversion failed - no output file found. Found: ${availableFiles.join(', ') || 'nothing'}`);
+      if (result.success) {
+        // Download succeeded — find the output file
+        let actualFile = outputFile;
+        if (!fs.existsSync(actualFile)) {
+          const files = fs.readdirSync(tmpDir);
+          const mp3File = files.find(f => f.endsWith('.mp3'));
+          if (mp3File) {
+            actualFile = path.join(tmpDir, mp3File);
+          } else {
+            const availableFiles = fs.readdirSync(tmpDir);
+            console.error('❌ MP3 file not found. Available files in tmp:', availableFiles);
+            throw new Error(`MP3 conversion failed - no output file found. Found: ${availableFiles.join(', ') || 'nothing'}`);
+          }
+        }
+
+        const stat = fs.statSync(actualFile);
+
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Content-Length', stat.size.toString());
+        res.setHeader('X-Audio-Title', encodeURIComponent(title));
+        res.setHeader('Access-Control-Expose-Headers', 'X-Audio-Title');
+
+        const readStream = fs.createReadStream(actualFile);
+        readStream.pipe(res);
+
+        readStream.on('end', () => {
+          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+        });
+
+        readStream.on('error', () => {
+          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+        });
+
+        return; // Success — exit the handler
+      }
+
+      // Store error for potential final failure message
+      lastError = result.error || 'Unknown error';
+
+      // If the error is NOT about format/bot, don't bother retrying with other clients
+      if (!lastError.includes('format') && !lastError.includes('Sign in') && !lastError.includes('bot') && !lastError.includes('DRM')) {
+        break;
       }
     }
 
-    const stat = fs.statSync(actualFile);
-
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Length', stat.size.toString());
-    res.setHeader('X-Audio-Title', encodeURIComponent(title));
-    res.setHeader('Access-Control-Expose-Headers', 'X-Audio-Title');
-
-    const readStream = fs.createReadStream(actualFile);
-    readStream.pipe(res);
-
-    readStream.on('end', () => {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
-    });
-
-    readStream.on('error', () => {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
-    });
+    // All strategies failed
+    throw new Error(lastError || 'All download strategies failed');
 
   } catch (error) {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }

@@ -24,9 +24,10 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp via pip to avoid caching old binary releases
-RUN apt-get update && apt-get install -y python3-pip && apt-get clean
-RUN pip3 install --no-cache-dir --upgrade yt-dlp --break-system-packages
+# Install yt-dlp via pip (always gets the latest version, no Docker cache issues)
+RUN apt-get update && apt-get install -y python3-pip && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --no-cache-dir --upgrade yt-dlp --break-system-packages \
+    && yt-dlp --version
 
 # Copy production dependencies from builder
 COPY --from=builder /app/package*.json ./
