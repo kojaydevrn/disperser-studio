@@ -254,6 +254,100 @@ const downloadViaPiped = async (videoUrl: string, outputPath: string, ffmpegLoc:
   return false;
 };
 
+// Fallback: Download audio via Cobalt API (reliable YouTube audio extractor)
+const downloadViaCobalt = async (videoUrl: string, outputPath: string, ffmpegLoc: string): Promise<boolean> => {
+  const cobaltApis = [
+    'https://api.cobalt.tools',
+    'https://cobalt-api.kwiatekmiki.com',
+  ];
+
+  for (const apiUrl of cobaltApis) {
+    try {
+      console.log(`🔄 Trying Cobalt API: ${apiUrl}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+      const response = await fetch(`${apiUrl}/`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          url: videoUrl,
+          downloadMode: 'audio',
+          audioFormat: 'mp3',
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        console.error(`❌ Cobalt ${apiUrl}: HTTP ${response.status}`);
+        continue;
+      }
+
+      const data: any = await response.json();
+
+      if (data.status === 'error') {
+        console.error(`❌ Cobalt ${apiUrl}: ${data.error?.code || 'Unknown error'}`);
+        continue;
+      }
+
+      // Cobalt returns a URL to download the audio
+      const audioUrl = data.url;
+      if (!audioUrl) {
+        console.error(`❌ Cobalt ${apiUrl}: No download URL returned`);
+        continue;
+      }
+
+      console.log(`📥 Downloading audio from Cobalt...`);
+
+      const audioController = new AbortController();
+      const audioTimeoutId = setTimeout(() => audioController.abort(), 120000);
+
+      const audioRes = await fetch(audioUrl, { signal: audioController.signal });
+      clearTimeout(audioTimeoutId);
+
+      if (!audioRes.ok) {
+        console.error(`❌ Cobalt audio download failed: HTTP ${audioRes.status}`);
+        continue;
+      }
+
+      const arrayBuffer = await audioRes.arrayBuffer();
+      const tempPath = outputPath.replace('.mp3', '.tmp_cobalt');
+      fs.writeFileSync(tempPath, Buffer.from(arrayBuffer));
+
+      // Convert to standardized MP3
+      await new Promise((resolve, reject) => {
+        execFile(ffmpegLoc, [
+          '-i', tempPath,
+          '-vn', '-ar', '44100', '-ac', '2', '-b:a', '192k',
+          '-f', 'mp3', outputPath, '-y'
+        ], { timeout: 60000 }, (err, _stdout, stderr) => {
+          try { fs.unlinkSync(tempPath); } catch { }
+          if (err) {
+            console.error('❌ FFmpeg conversion failed:', stderr);
+            reject(err);
+          } else {
+            resolve(undefined);
+          }
+        });
+      });
+
+      if (fs.existsSync(outputPath)) {
+        console.log(`✅ Cobalt download succeeded via ${apiUrl}`);
+        return true;
+      }
+    } catch (error: any) {
+      console.error(`❌ Cobalt ${apiUrl} failed:`, error.message);
+      continue;
+    }
+  }
+
+  return false;
+};
+
 // Initialize Supabase
 const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
 const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || "";
@@ -751,16 +845,25 @@ app.post('/api/youtube/download', async (req, res) => {
       // Store error for potential final failure message
       lastError = result.error || 'Unknown error';
 
-      // If the error is NOT about format/bot, don't bother retrying with other clients
-      if (!lastError.includes('format') && !lastError.includes('Sign in') && !lastError.includes('bot') && !lastError.includes('DRM')) {
+      // If rate-limited (429), skip all remaining yt-dlp strategies immediately
+      if (lastError.includes('429') || lastError.includes('Too Many Requests')) {
+        console.warn('⚠️ YouTube rate-limited (429). Skipping remaining yt-dlp strategies.');
         break;
       }
+
+      // If the error is NOT about format/bot, don't bother retrying with other clients
+      if (!lastError.includes('format') && !lastError.includes('Sign in') && !lastError.includes('bot') && !lastError.includes('DRM') && !lastError.includes('PO Token')) {
+        break;
+      }
+
+      // Add delay between strategies to avoid triggering rate limits
+      await new Promise(r => setTimeout(r, 2000));
     }
 
     // Strategy 4: Piped API fallback (external service, not yt-dlp)
-    console.log('🔄 All yt-dlp strategies failed. Trying Piped API fallback...');
+    console.log('🔄 All yt-dlp strategies failed. Trying Cobalt API fallback...');
 
-    // Clean up tmpDir before Piped attempt
+    // Clean up tmpDir before fallback attempts
     try {
       const prevFiles = fs.readdirSync(tmpDir);
       for (const f of prevFiles) {
@@ -768,32 +871,43 @@ app.post('/api/youtube/download', async (req, res) => {
       }
     } catch { }
 
-    const pipedSuccess = await downloadViaPiped(url, outputFile, ffmpegLocation);
+    // Try Cobalt API first (most reliable fallback)
+    const cobaltSuccess = await downloadViaCobalt(url, outputFile, ffmpegLocation);
 
-    if (pipedSuccess && fs.existsSync(outputFile)) {
-      const stat = fs.statSync(outputFile);
+    if (!cobaltSuccess || !fs.existsSync(outputFile)) {
+      console.log('🔄 Cobalt failed. Trying Piped API fallback...');
+      // Clean up again
+      try {
+        const prevFiles = fs.readdirSync(tmpDir);
+        for (const f of prevFiles) { fs.unlinkSync(path.join(tmpDir, f)); }
+      } catch { }
 
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Content-Length', stat.size.toString());
-      res.setHeader('X-Audio-Title', encodeURIComponent(title));
-      res.setHeader('Access-Control-Expose-Headers', 'X-Audio-Title');
-
-      const readStream = fs.createReadStream(outputFile);
-      readStream.pipe(res);
-
-      readStream.on('end', () => {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
-      });
-
-      readStream.on('error', () => {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
-      });
-
-      return;
+      const pipedSuccess = await downloadViaPiped(url, outputFile, ffmpegLocation);
+      if (!pipedSuccess || !fs.existsSync(outputFile)) {
+        throw new Error('All download strategies failed (yt-dlp + Cobalt + Piped)');
+      }
     }
 
-    // Everything failed
-    throw new Error('All download strategies failed (yt-dlp + Piped API)');
+    // Success from one of the fallbacks
+    const stat = fs.statSync(outputFile);
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', stat.size.toString());
+    res.setHeader('X-Audio-Title', encodeURIComponent(title));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Audio-Title');
+
+    const readStream = fs.createReadStream(outputFile);
+    readStream.pipe(res);
+
+    readStream.on('end', () => {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+    });
+
+    readStream.on('error', () => {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+    });
+
+    return;
 
   } catch (error) {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
