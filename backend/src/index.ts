@@ -50,14 +50,7 @@ const getYtBaseArgs = () => {
   let rawCookieString = null;
   const localCookies = path.resolve(__dirname, '../cookies.txt');
   
-  if (fs.existsSync(localCookies)) {
-    const content = fs.readFileSync(localCookies, 'utf-8');
-    if (content.includes('# Netscape HTTP Cookie File') || content.includes('curl.haxx.se') || content.includes('\tTRUE\t')) {
-      currentCookiesPath = localCookies;
-    } else {
-      rawCookieString = content.trim();
-    }
-  } else if (process.env.YT_COOKIES) {
+  if (process.env.YT_COOKIES) {
     if (process.env.YT_COOKIES.includes('# Netscape HTTP Cookie File') || process.env.YT_COOKIES.includes('curl.haxx.se') || process.env.YT_COOKIES.includes('\tTRUE\t')) {
       try {
         const tempPath = path.join(os.tmpdir(), `cookies-dl-${Date.now()}.txt`);
@@ -68,6 +61,13 @@ const getYtBaseArgs = () => {
       }
     } else {
       rawCookieString = process.env.YT_COOKIES;
+    }
+  } else if (fs.existsSync(localCookies)) {
+    const content = fs.readFileSync(localCookies, 'utf-8');
+    if (content.includes('# Netscape HTTP Cookie File') || content.includes('curl.haxx.se') || content.includes('\tTRUE\t')) {
+      currentCookiesPath = localCookies;
+    } else {
+      rawCookieString = content.trim();
     }
   }
 
