@@ -52,13 +52,13 @@ const getYtBaseArgs = () => {
   
   if (fs.existsSync(localCookies)) {
     const content = fs.readFileSync(localCookies, 'utf-8');
-    if (content.includes('# Netscape HTTP Cookie File')) {
+    if (content.includes('# Netscape HTTP Cookie File') || content.includes('curl.haxx.se') || content.includes('\tTRUE\t')) {
       currentCookiesPath = localCookies;
     } else {
       rawCookieString = content.trim();
     }
   } else if (process.env.YT_COOKIES) {
-    if (process.env.YT_COOKIES.includes('# Netscape HTTP Cookie File')) {
+    if (process.env.YT_COOKIES.includes('# Netscape HTTP Cookie File') || process.env.YT_COOKIES.includes('curl.haxx.se') || process.env.YT_COOKIES.includes('\tTRUE\t')) {
       try {
         const tempPath = path.join(os.tmpdir(), `cookies-dl-${Date.now()}.txt`);
         fs.writeFileSync(tempPath, process.env.YT_COOKIES.replace(/\\n/g, '\n'));
@@ -78,8 +78,8 @@ const getYtBaseArgs = () => {
     '--sleep-requests', '1',
     '--add-header', 'Accept-Language: en-US,en;q=0.9',
     ...(rawCookieString ? ['--add-header', `Cookie: ${rawCookieString}`] : []),
-    // Improved bypass strategy
-    '--extractor-args', 'youtube:player_client=default,web;player_skip=web_creator',
+    // Use TV client to bypass "Sign in to confirm you're not a bot" on authenticated requests
+    '--extractor-args', 'youtube:player_client=tv',
     ...(currentCookiesPath ? ['--cookies', currentCookiesPath] : []),
     ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [])
   ];
@@ -508,7 +508,7 @@ app.post('/api/youtube/download', async (req, res) => {
         ...finalBaseArgs,
         '--rm-cache-dir',
         '--format', 'bestaudio/best',
-        '--ffmpeg-location', os.platform() === 'win32' ? 'ffmpeg' : (process.env.FFMPEG_PATH || 'ffmpeg'),
+        '--ffmpeg-location', os.platform() === 'win32' ? 'ffmpeg' : (process.env.FFMPEG_PATH || (fs.existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg')),
         '-x',
         '--audio-format', 'mp3',
         '--audio-quality', '0',
