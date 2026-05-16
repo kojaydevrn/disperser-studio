@@ -74,6 +74,9 @@ const getDownloadStrategies = () => {
   const cookiesArgs = cookiesPath ? ['--cookies', cookiesPath] : [];
   const proxyArgs = process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [];
 
+  console.log(`🍪 Cookies detected: ${cookiesPath ? 'YES (' + cookiesPath + ')' : 'NO'}`);
+  console.log(`🔑 YT_COOKIES env: ${process.env.YT_COOKIES ? 'SET (' + process.env.YT_COOKIES.substring(0, 30) + '...)' : 'NOT SET'}`);
+
   const baseArgs = [
     '--no-check-certificates',
     '--force-ipv4',
@@ -82,20 +85,21 @@ const getDownloadStrategies = () => {
     ...proxyArgs,
   ];
 
-  return [
-    // Strategy 1: android_vr + cookies (proven working on Railway with fresh cookies)
-    ...(cookiesArgs.length ? [
-      { name: 'android_vr+cookies', args: [...baseArgs, '--extractor-args', 'youtube:player_client=android_vr', ...cookiesArgs] },
-    ] : []),
-    // Strategy 2: mweb (works without cookies)
-    { name: 'mweb', args: [...baseArgs, '--extractor-args', 'youtube:player_client=mweb'] },
-    // Strategy 3: web_creator + cookies
+  const strategies = [
+    // Strategy 1: web_creator + cookies (best with auth, needs n-challenge solver)
     ...(cookiesArgs.length ? [
       { name: 'web_creator+cookies', args: [...baseArgs, '--extractor-args', 'youtube:player_client=web_creator', ...cookiesArgs] },
     ] : []),
+    // Strategy 2: android_vr WITHOUT cookies (this client does NOT support cookies)
+    { name: 'android_vr', args: [...baseArgs, '--extractor-args', 'youtube:player_client=android_vr'] },
+    // Strategy 3: mweb (works without cookies)
+    { name: 'mweb', args: [...baseArgs, '--extractor-args', 'youtube:player_client=mweb'] },
     // Strategy 4: default with cookies
     { name: 'default+cookies', args: [...baseArgs, ...cookiesArgs] },
   ];
+
+  console.log(`📋 Strategies: ${strategies.map(s => s.name).join(' → ')}`);
+  return strategies;
 };
 
 // Legacy helper for /api/youtube/info (simple, non-critical)
@@ -139,7 +143,13 @@ const downloadViaPiped = async (videoUrl: string, outputPath: string, ffmpegLoc:
   }
 
   // Dynamically fetch working Piped API instances + hardcoded fallback
-  let pipedInstances = ['https://api.piped.private.coffee'];
+  let pipedInstances = [
+    'https://pipedapi.darkness.services',
+    'https://api.piped.private.coffee',
+    'https://pipedapi.r4fo.com',
+    'https://pipedapi.in.projectsegfau.lt',
+    'https://pipedapi.adminforge.de',
+  ];
   try {
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), 8000);
@@ -966,30 +976,10 @@ app.post('/api/youtube/download', async (req, res) => {
       }
     } catch { }
 
-    // Try Cobalt API first (most reliable fallback)
-    const cobaltSuccess = await downloadViaCobalt(url, outputFile, ffmpegLocation);
-
-    if (!cobaltSuccess || !fs.existsSync(outputFile)) {
-      console.log('🔄 Cobalt failed. Trying Invidious API fallback...');
-      try {
-        const prevFiles = fs.readdirSync(tmpDir);
-        for (const f of prevFiles) { fs.unlinkSync(path.join(tmpDir, f)); }
-      } catch { }
-
-      const invidiousSuccess = await downloadViaInvidious(url, outputFile, ffmpegLocation);
-
-      if (!invidiousSuccess || !fs.existsSync(outputFile)) {
-        console.log('🔄 Invidious failed. Trying Piped API fallback...');
-        try {
-          const prevFiles = fs.readdirSync(tmpDir);
-          for (const f of prevFiles) { fs.unlinkSync(path.join(tmpDir, f)); }
-        } catch { }
-
-        const pipedSuccess = await downloadViaPiped(url, outputFile, ffmpegLocation);
-        if (!pipedSuccess || !fs.existsSync(outputFile)) {
-          throw new Error('All download strategies failed (yt-dlp + Cobalt + Invidious + Piped)');
-        }
-      }
+    // Try Piped API fallback (Cobalt requires JWT, Invidious instances mostly dead)
+    const pipedSuccess = await downloadViaPiped(url, outputFile, ffmpegLocation);
+    if (!pipedSuccess || !fs.existsSync(outputFile)) {
+      throw new Error('All download strategies failed (yt-dlp + Piped). Try refreshing YouTube cookies.');
     }
 
     // Success from one of the fallbacks

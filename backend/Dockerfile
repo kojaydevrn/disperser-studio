@@ -29,6 +29,9 @@ RUN apt-get update && apt-get install -y python3-pip && apt-get clean && rm -rf 
 RUN pip3 install --no-cache-dir --upgrade yt-dlp --break-system-packages \
     && yt-dlp --version
 
+# Ensure yt-dlp can find Node.js for n-challenge solving
+RUN ln -sf $(which node) /usr/local/bin/node || true
+
 # Copy production dependencies from builder
 COPY --from=builder /app/package*.json ./
 RUN npm install --omit=dev
