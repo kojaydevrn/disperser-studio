@@ -256,6 +256,12 @@ const downloadViaPiped = async (videoUrl: string, outputPath: string, ffmpegLoc:
 
 // Fallback: Download audio via Cobalt API (reliable YouTube audio extractor)
 const downloadViaCobalt = async (videoUrl: string, outputPath: string, ffmpegLoc: string): Promise<boolean> => {
+  const videoId = extractVideoId(videoUrl);
+  if (!videoId) return false;
+
+  // Cobalt requires full youtube.com URL format
+  const fullUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
   const cobaltApis = [
     'https://api.cobalt.tools',
     'https://cobalt-api.kwiatekmiki.com',
@@ -272,9 +278,10 @@ const downloadViaCobalt = async (videoUrl: string, outputPath: string, ffmpegLoc
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0',
         },
         body: JSON.stringify({
-          url: videoUrl,
+          url: fullUrl,
           downloadMode: 'audio',
           audioFormat: 'mp3',
         }),
@@ -282,22 +289,22 @@ const downloadViaCobalt = async (videoUrl: string, outputPath: string, ffmpegLoc
       });
       clearTimeout(timeoutId);
 
+      const data: any = await response.json().catch(() => ({}));
+
       if (!response.ok) {
-        console.error(`❌ Cobalt ${apiUrl}: HTTP ${response.status}`);
+        console.error(`❌ Cobalt ${apiUrl}: HTTP ${response.status}`, JSON.stringify(data));
         continue;
       }
-
-      const data: any = await response.json();
 
       if (data.status === 'error') {
-        console.error(`❌ Cobalt ${apiUrl}: ${data.error?.code || 'Unknown error'}`);
+        console.error(`❌ Cobalt ${apiUrl}: ${data.error?.code || JSON.stringify(data)}`);
         continue;
       }
 
-      // Cobalt returns a URL to download the audio
-      const audioUrl = data.url;
+      // Cobalt returns either a direct URL or a tunnel/redirect URL
+      const audioUrl = data.url || data.audio;
       if (!audioUrl) {
-        console.error(`❌ Cobalt ${apiUrl}: No download URL returned`);
+        console.error(`❌ Cobalt ${apiUrl}: No download URL returned. Response:`, JSON.stringify(data));
         continue;
       }
 
@@ -341,6 +348,92 @@ const downloadViaCobalt = async (videoUrl: string, outputPath: string, ffmpegLoc
       }
     } catch (error: any) {
       console.error(`❌ Cobalt ${apiUrl} failed:`, error.message);
+      continue;
+    }
+  }
+
+  return false;
+};
+
+// Fallback: Download audio via Invidious API (decentralized YouTube frontend)
+const downloadViaInvidious = async (videoUrl: string, outputPath: string, ffmpegLoc: string): Promise<boolean> => {
+  const videoId = extractVideoId(videoUrl);
+  if (!videoId) return false;
+
+  const invidiousInstances = [
+    'https://invidious.nerdvpn.de',
+    'https://inv.nadeko.net',
+    'https://invidious.privacyredirect.com',
+    'https://invidious.protokoll-11.de',
+    'https://iv.datura.network',
+  ];
+
+  for (const instance of invidiousInstances) {
+    try {
+      console.log(`🔄 Trying Invidious API: ${instance}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const response = await fetch(`${instance}/api/v1/videos/${videoId}`, {
+        headers: { 'Accept': 'application/json' },
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        console.error(`❌ Invidious ${instance}: HTTP ${response.status}`);
+        continue;
+      }
+
+      const data: any = await response.json();
+
+      // Find best audio-only adaptive format
+      const audioFormats = (data.adaptiveFormats || [])
+        .filter((f: any) => f.type?.startsWith('audio/') && f.url)
+        .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+
+      if (audioFormats.length === 0) {
+        console.error(`❌ Invidious ${instance}: No audio formats found`);
+        continue;
+      }
+
+      const bestAudio = audioFormats[0];
+      console.log(`📥 Downloading audio from Invidious (${bestAudio.type}, ${Math.round((bestAudio.bitrate || 0) / 1000)}kbps)...`);
+
+      const audioController = new AbortController();
+      const audioTimeoutId = setTimeout(() => audioController.abort(), 120000);
+
+      const audioRes = await fetch(bestAudio.url, { signal: audioController.signal });
+      clearTimeout(audioTimeoutId);
+
+      if (!audioRes.ok) {
+        console.error(`❌ Invidious audio download failed: HTTP ${audioRes.status}`);
+        continue;
+      }
+
+      const arrayBuffer = await audioRes.arrayBuffer();
+      const tempPath = outputPath.replace('.mp3', '.tmp_invidious');
+      fs.writeFileSync(tempPath, Buffer.from(arrayBuffer));
+
+      // Convert to MP3
+      await new Promise((resolve, reject) => {
+        execFile(ffmpegLoc, [
+          '-i', tempPath,
+          '-vn', '-ar', '44100', '-ac', '2', '-b:a', '192k',
+          '-f', 'mp3', outputPath, '-y'
+        ], { timeout: 60000 }, (err, _stdout, stderr) => {
+          try { fs.unlinkSync(tempPath); } catch { }
+          if (err) reject(err);
+          else resolve(undefined);
+        });
+      });
+
+      if (fs.existsSync(outputPath)) {
+        console.log(`✅ Invidious download succeeded via ${instance}`);
+        return true;
+      }
+    } catch (error: any) {
+      console.error(`❌ Invidious ${instance} failed:`, error.message);
       continue;
     }
   }
@@ -875,16 +968,25 @@ app.post('/api/youtube/download', async (req, res) => {
     const cobaltSuccess = await downloadViaCobalt(url, outputFile, ffmpegLocation);
 
     if (!cobaltSuccess || !fs.existsSync(outputFile)) {
-      console.log('🔄 Cobalt failed. Trying Piped API fallback...');
-      // Clean up again
+      console.log('🔄 Cobalt failed. Trying Invidious API fallback...');
       try {
         const prevFiles = fs.readdirSync(tmpDir);
         for (const f of prevFiles) { fs.unlinkSync(path.join(tmpDir, f)); }
       } catch { }
 
-      const pipedSuccess = await downloadViaPiped(url, outputFile, ffmpegLocation);
-      if (!pipedSuccess || !fs.existsSync(outputFile)) {
-        throw new Error('All download strategies failed (yt-dlp + Cobalt + Piped)');
+      const invidiousSuccess = await downloadViaInvidious(url, outputFile, ffmpegLocation);
+
+      if (!invidiousSuccess || !fs.existsSync(outputFile)) {
+        console.log('🔄 Invidious failed. Trying Piped API fallback...');
+        try {
+          const prevFiles = fs.readdirSync(tmpDir);
+          for (const f of prevFiles) { fs.unlinkSync(path.join(tmpDir, f)); }
+        } catch { }
+
+        const pipedSuccess = await downloadViaPiped(url, outputFile, ffmpegLocation);
+        if (!pipedSuccess || !fs.existsSync(outputFile)) {
+          throw new Error('All download strategies failed (yt-dlp + Cobalt + Invidious + Piped)');
+        }
       }
     }
 
