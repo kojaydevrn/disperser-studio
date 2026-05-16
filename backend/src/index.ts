@@ -646,14 +646,18 @@ app.post('/api/youtube/download', async (req, res) => {
         url
       ], { timeout: 20000 }, (err, stdout) => {
         const urlObj = new URL(url);
-        const videoId = urlObj.searchParams.get('v') || url.split('/').pop() || 'audio';
+        const videoId = urlObj.searchParams.get('v') || url.split('/').pop()?.split('?')[0] || 'audio';
 
         if (err) {
+          console.warn('⚠️ Could not fetch video info, using fallback title');
           resolve({ title: `YouTube Audio (${videoId})`, duration: 0 });
         } else {
           const lines = stdout.trim().split('\n');
+          const rawTitle = lines[0]?.trim() || '';
+          // Filter out invalid titles
+          const isValidTitle = rawTitle && rawTitle !== 'NA' && rawTitle !== 'nan' && !rawTitle.startsWith('ERROR');
           resolve({
-            title: lines[0] || `YouTube Audio (${videoId})`,
+            title: isValidTitle ? rawTitle : `YouTube Audio (${videoId})`,
             duration: parseFloat(lines[1]) || 0
           });
         }
@@ -661,6 +665,7 @@ app.post('/api/youtube/download', async (req, res) => {
     });
 
     const title = info.title;
+    console.log(`🎵 Video title: "${title}"`);
 
     // Step 2: Try download with multiple strategies
     const strategies = getDownloadStrategies();
