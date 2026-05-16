@@ -507,7 +507,7 @@ app.post('/api/youtube/download', async (req, res) => {
       const finalArgs = [
         ...finalBaseArgs,
         '--rm-cache-dir',
-        '--format', 'bestaudio/best',
+        '--format', 'bestaudio/best/ba/b',
         '--ffmpeg-location', os.platform() === 'win32' ? 'ffmpeg' : (process.env.FFMPEG_PATH || (fs.existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg')),
         '-x',
         '--audio-format', 'mp3',
