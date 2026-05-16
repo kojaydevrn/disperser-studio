@@ -47,17 +47,27 @@ const ytConfig = {
 // Helper to get base args with dynamic cookies
 const getYtBaseArgs = () => {
   let currentCookiesPath = null;
+  let rawCookieString = null;
   const localCookies = path.resolve(__dirname, '../cookies.txt');
   
   if (fs.existsSync(localCookies)) {
-    currentCookiesPath = localCookies;
+    const content = fs.readFileSync(localCookies, 'utf-8');
+    if (content.includes('# Netscape HTTP Cookie File')) {
+      currentCookiesPath = localCookies;
+    } else {
+      rawCookieString = content.trim();
+    }
   } else if (process.env.YT_COOKIES) {
-    try {
-      const tempPath = path.join(os.tmpdir(), `cookies-dl-${Date.now()}.txt`);
-      fs.writeFileSync(tempPath, process.env.YT_COOKIES);
-      currentCookiesPath = tempPath;
-    } catch (e) {
-      console.error('Failed to write dynamic cookies:', e);
+    if (process.env.YT_COOKIES.includes('# Netscape HTTP Cookie File')) {
+      try {
+        const tempPath = path.join(os.tmpdir(), `cookies-dl-${Date.now()}.txt`);
+        fs.writeFileSync(tempPath, process.env.YT_COOKIES.replace(/\\n/g, '\n'));
+        currentCookiesPath = tempPath;
+      } catch (e) {
+        console.error('Failed to write dynamic cookies:', e);
+      }
+    } else {
+      rawCookieString = process.env.YT_COOKIES;
     }
   }
 
@@ -67,8 +77,9 @@ const getYtBaseArgs = () => {
     '--force-ipv4',
     '--sleep-requests', '1',
     '--add-header', 'Accept-Language: en-US,en;q=0.9',
+    ...(rawCookieString ? ['--add-header', `Cookie: ${rawCookieString}`] : []),
     // Improved bypass strategy
-    '--extractor-args', 'youtube:player_client=android,web;player_skip=web_creator',
+    '--extractor-args', 'youtube:player_client=default,web;player_skip=web_creator',
     ...(currentCookiesPath ? ['--cookies', currentCookiesPath] : []),
     ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [])
   ];
@@ -496,7 +507,7 @@ app.post('/api/youtube/download', async (req, res) => {
       const finalArgs = [
         ...finalBaseArgs,
         '--rm-cache-dir',
-        '--format', 'ba*/bestaudio/best',
+        '--format', 'bestaudio/best',
         '--ffmpeg-location', os.platform() === 'win32' ? 'ffmpeg' : (process.env.FFMPEG_PATH || 'ffmpeg'),
         '-x',
         '--audio-format', 'mp3',
