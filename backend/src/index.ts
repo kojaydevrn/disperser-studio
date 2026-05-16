@@ -111,7 +111,7 @@ const getYtBaseArgs = () => {
     '--force-ipv4',
     '--sleep-requests', '1',
     '--add-header', 'Accept-Language: en-US,en;q=0.9',
-    '--extractor-args', 'youtube:player_client=android_vr',
+    '--extractor-args', 'youtube:player_client=web_creator',
     ...(cookiesPath ? ['--cookies', cookiesPath] : []),
     ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [])
   ];
