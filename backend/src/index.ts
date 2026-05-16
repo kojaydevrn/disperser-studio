@@ -44,15 +44,9 @@ const ytConfig = {
   executable: os.platform() === 'win32' ? 'yt-dlp' : (process.env.YT_DLP_PATH || 'yt-dlp')
 };
 
-// Helper to resolve cookies path (for local dev only; skipped on datacenter/production)
+// Helper to resolve cookies path
 const resolveCookiesPath = (): string | null => {
   const localCookies = path.resolve(__dirname, '../cookies.txt');
-
-  // On production/datacenter, cookies get invalidated by YouTube instantly — skip them
-  if (process.env.NODE_ENV === 'production') {
-    console.log('🏭 Production mode: skipping cookies (datacenter IPs invalidate them)');
-    return null;
-  }
 
   if (process.env.YT_COOKIES) {
     const val = process.env.YT_COOKIES;
@@ -89,12 +83,12 @@ const getDownloadStrategies = () => {
   ];
 
   return [
-    // Strategy 1: yt-dlp defaults (most maintained path, auto-selects best client)
-    { name: 'default', args: [...baseArgs, ...cookiesArgs] },
-    // Strategy 2: android_vr (no PO token needed, no DRM)
+    // Strategy 1: android_vr + cookies (least restrictions, no DRM, no PO token)
+    { name: 'android_vr+cookies', args: [...baseArgs, '--extractor-args', 'youtube:player_client=android_vr', ...cookiesArgs] },
+    // Strategy 2: android_vr without cookies
     { name: 'android_vr', args: [...baseArgs, '--extractor-args', 'youtube:player_client=android_vr'] },
-    // Strategy 3: mweb fallback (usually gives format 18 at least)
-    { name: 'mweb', args: [...baseArgs, '--extractor-args', 'youtube:player_client=mweb'] },
+    // Strategy 3: yt-dlp defaults (auto-selects best client)
+    { name: 'default', args: [...baseArgs, ...cookiesArgs] },
   ];
 };
 
@@ -114,6 +108,145 @@ const getYtBaseArgs = () => {
     args,
     tempFile: cookiesPath && cookiesPath.includes('cookies-dl-') ? cookiesPath : null
   };
+};
+
+// Extract video ID from any YouTube URL format
+const extractVideoId = (url: string): string => {
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname === 'youtu.be') {
+      return urlObj.pathname.slice(1).split('?')[0];
+    }
+    return urlObj.searchParams.get('v') || url.split('/').pop()?.split('?')[0] || '';
+  } catch {
+    return '';
+  }
+};
+
+// Fallback: Download audio via Piped API (free open-source YouTube frontend)
+const downloadViaPiped = async (videoUrl: string, outputPath: string, ffmpegLoc: string): Promise<boolean> => {
+  const videoId = extractVideoId(videoUrl);
+  if (!videoId) {
+    console.error('❌ Piped: could not extract video ID from URL');
+    return false;
+  }
+
+  // Dynamically fetch working Piped API instances + hardcoded fallback
+  let pipedInstances = ['https://api.piped.private.coffee'];
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 8000);
+    const listRes = await fetch('https://piped-instances.kavin.rocks/', {
+      signal: controller.signal,
+    });
+    clearTimeout(tid);
+    if (listRes.ok) {
+      const instances: any[] = await listRes.json();
+      const apiUrls = instances
+        .filter((i: any) => i.api_url)
+        .map((i: any) => i.api_url.replace(/\/$/, ''));
+      if (apiUrls.length > 0) {
+        // Put our known-good instance first, then add others
+        pipedInstances = [...new Set(['https://api.piped.private.coffee', ...apiUrls])];
+      }
+    }
+  } catch {
+    console.log('⚠️ Could not fetch Piped instance list, using hardcoded fallback');
+  }
+
+  // Try at most 5 instances to avoid excessive delays
+  const instancesToTry = pipedInstances.slice(0, 5);
+
+  for (const instance of instancesToTry) {
+    try {
+      console.log(`🔄 Trying Piped API: ${instance}/streams/${videoId}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const response = await fetch(`${instance}/streams/${videoId}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Disperser-Studio/1.0)' },
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        console.error(`❌ Piped ${instance}: HTTP ${response.status}`);
+        continue;
+      }
+
+      const data: any = await response.json();
+
+      if (!data.audioStreams || data.audioStreams.length === 0) {
+        console.error(`❌ Piped ${instance}: No audio streams returned`);
+        continue;
+      }
+
+      // Pick highest quality audio stream
+      const bestAudio = data.audioStreams
+        .filter((s: any) => s.url && s.mimeType?.startsWith('audio/'))
+        .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+
+      if (!bestAudio?.url) {
+        console.error(`❌ Piped ${instance}: No valid audio stream URL`);
+        continue;
+      }
+
+      console.log(`📥 Downloading audio from Piped (${bestAudio.quality || bestAudio.mimeType})...`);
+
+      // Download the raw audio stream
+      const audioController = new AbortController();
+      const audioTimeoutId = setTimeout(() => audioController.abort(), 120000);
+
+      const audioRes = await fetch(bestAudio.url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Disperser-Studio/1.0)' },
+        signal: audioController.signal,
+      });
+      clearTimeout(audioTimeoutId);
+
+      if (!audioRes.ok) {
+        console.error(`❌ Piped audio download failed: HTTP ${audioRes.status}`);
+        continue;
+      }
+
+      const tempAudioPath = outputPath.replace('.mp3', '.tmp_audio');
+      const arrayBuffer = await audioRes.arrayBuffer();
+      fs.writeFileSync(tempAudioPath, Buffer.from(arrayBuffer));
+
+      console.log(`🔧 Converting to MP3 with ffmpeg...`);
+
+      // Convert to MP3 using ffmpeg
+      await new Promise((resolve, reject) => {
+        execFile(ffmpegLoc, [
+          '-i', tempAudioPath,
+          '-vn',
+          '-ar', '44100',
+          '-ac', '2',
+          '-b:a', '192k',
+          '-f', 'mp3',
+          outputPath,
+          '-y'
+        ], { timeout: 60000 }, (err, _stdout, stderr) => {
+          try { fs.unlinkSync(tempAudioPath); } catch { }
+          if (err) {
+            console.error('❌ FFmpeg conversion failed:', stderr);
+            reject(err);
+          } else {
+            resolve(undefined);
+          }
+        });
+      });
+
+      if (fs.existsSync(outputPath)) {
+        console.log(`✅ Piped + ffmpeg download succeeded via ${instance}`);
+        return true;
+      }
+    } catch (error: any) {
+      console.error(`❌ Piped instance ${instance} failed:`, error.message);
+      continue;
+    }
+  }
+
+  return false;
 };
 
 // Initialize Supabase
@@ -432,11 +565,11 @@ app.get('/api/roblox/operation/:id', async (req, res) => {
       headers: { 'x-api-key': trimmedKey }
     });
     const data = await response.json();
-    
+
     if (!response.ok) {
       return res.status(response.status).json({ success: false, error: data.message || 'Roblox Operation Error', details: data });
     }
-    
+
     res.json({ success: true, operation: data });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -540,7 +673,7 @@ app.post('/api/youtube/download', async (req, res) => {
         for (const f of prevFiles) {
           fs.unlinkSync(path.join(tmpDir, f));
         }
-      } catch {}
+      } catch { }
 
       console.log(`🔄 Trying download strategy: "${strategy.name}" for ${url}`);
 
@@ -614,8 +747,43 @@ app.post('/api/youtube/download', async (req, res) => {
       }
     }
 
-    // All strategies failed
-    throw new Error(lastError || 'All download strategies failed');
+    // Strategy 4: Piped API fallback (external service, not yt-dlp)
+    console.log('🔄 All yt-dlp strategies failed. Trying Piped API fallback...');
+
+    // Clean up tmpDir before Piped attempt
+    try {
+      const prevFiles = fs.readdirSync(tmpDir);
+      for (const f of prevFiles) {
+        fs.unlinkSync(path.join(tmpDir, f));
+      }
+    } catch { }
+
+    const pipedSuccess = await downloadViaPiped(url, outputFile, ffmpegLocation);
+
+    if (pipedSuccess && fs.existsSync(outputFile)) {
+      const stat = fs.statSync(outputFile);
+
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Content-Length', stat.size.toString());
+      res.setHeader('X-Audio-Title', encodeURIComponent(title));
+      res.setHeader('Access-Control-Expose-Headers', 'X-Audio-Title');
+
+      const readStream = fs.createReadStream(outputFile);
+      readStream.pipe(res);
+
+      readStream.on('end', () => {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+      });
+
+      readStream.on('error', () => {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
+      });
+
+      return;
+    }
+
+    // Everything failed
+    throw new Error('All download strategies failed (yt-dlp + Piped API)');
 
   } catch (error) {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { }
