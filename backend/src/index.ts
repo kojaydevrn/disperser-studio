@@ -83,15 +83,17 @@ const getDownloadStrategies = () => {
   ];
 
   return [
-    // Strategy 1: mweb (mobile web, most reliable without cookies)
+    // Strategy 1: android_vr + cookies (proven working on Railway with fresh cookies)
+    ...(cookiesArgs.length ? [
+      { name: 'android_vr+cookies', args: [...baseArgs, '--extractor-args', 'youtube:player_client=android_vr', ...cookiesArgs] },
+    ] : []),
+    // Strategy 2: mweb (works without cookies)
     { name: 'mweb', args: [...baseArgs, '--extractor-args', 'youtube:player_client=mweb'] },
-    // Strategy 2: web_creator + cookies (best if cookies are fresh)
+    // Strategy 3: web_creator + cookies
     ...(cookiesArgs.length ? [
       { name: 'web_creator+cookies', args: [...baseArgs, '--extractor-args', 'youtube:player_client=web_creator', ...cookiesArgs] },
     ] : []),
-    // Strategy 3: ios client (no DRM, good fallback)
-    { name: 'ios', args: [...baseArgs, '--extractor-args', 'youtube:player_client=ios'] },
-    // Strategy 4: yt-dlp defaults with cookies
+    // Strategy 4: default with cookies
     { name: 'default+cookies', args: [...baseArgs, ...cookiesArgs] },
   ];
 };
@@ -105,7 +107,7 @@ const getYtBaseArgs = () => {
     '--force-ipv4',
     '--sleep-requests', '1',
     '--add-header', 'Accept-Language: en-US,en;q=0.9',
-    '--extractor-args', 'youtube:player_client=mweb',
+    '--extractor-args', 'youtube:player_client=android_vr',
     ...(cookiesPath ? ['--cookies', cookiesPath] : []),
     ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [])
   ];
