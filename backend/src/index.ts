@@ -78,8 +78,8 @@ const getYtBaseArgs = () => {
     '--sleep-requests', '1',
     '--add-header', 'Accept-Language: en-US,en;q=0.9',
     ...(rawCookieString ? ['--add-header', `Cookie: ${rawCookieString}`] : []),
-    // Use robust mobile clients to bypass "Sign in to confirm you're not a bot" and DRM on datacenter IPs
-    '--extractor-args', 'youtube:player_client=ios,android,mweb',
+    // Use android_vr client which bypasses PO Token checks and DRM on datacenter IPs perfectly
+    '--extractor-args', 'youtube:player_client=android_vr',
     ...(currentCookiesPath ? ['--cookies', currentCookiesPath] : []),
     ...(process.env.YT_PROXY ? ['--proxy', process.env.YT_PROXY] : [])
   ];
