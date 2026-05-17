@@ -1,8 +1,11 @@
 [phases.setup]
-nixPkgs = ["nodejs", "ffmpeg", "yt-dlp", "deno"]
+nixPkgs = ["nodejs", "ffmpeg", "yt-dlp", "deno", "python3"]
+
+[phases.install]
+cmds = ["npm install", "pip install --no-cache-dir bgutil-ytdlp-pot-provider || true"]
 
 [phases.build]
-cmds = ["npm install", "npm run build"]
+cmds = ["npm run build"]
 
 [start]
 cmd = "node dist/index.js"
