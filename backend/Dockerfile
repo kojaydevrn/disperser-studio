@@ -16,18 +16,28 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Install FFmpeg, Python, and curl
+# Install FFmpeg, Python, curl, and ca-certificates
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     python3 \
+    python3-pip \
     curl \
+    unzip \
+    ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp via pip (always gets the latest version, no Docker cache issues)
-RUN apt-get update && apt-get install -y python3-pip && apt-get clean && rm -rf /var/lib/apt/lists/*
-RUN pip3 install --no-cache-dir --upgrade yt-dlp --break-system-packages \
+# Install Deno (CRITICAL: required by yt-dlp for solving YouTube n-challenge)
+RUN curl -fsSL https://deno.land/install.sh | sh \
+    && ln -sf /root/.deno/bin/deno /usr/local/bin/deno \
+    && deno --version
+
+# Install yt-dlp nightly (latest patches for YouTube compatibility)
+RUN pip3 install --no-cache-dir --upgrade "yt-dlp[default]" --break-system-packages \
     && yt-dlp --version
+
+# Install bgutil PO Token provider plugin (auto-generates PO tokens for YouTube)
+RUN pip3 install --no-cache-dir bgutil-ytdlp-pot-provider --break-system-packages || true
 
 # Ensure yt-dlp can find Node.js for n-challenge solving
 RUN ln -sf $(which node) /usr/local/bin/node || true
@@ -42,6 +52,8 @@ COPY --from=builder /app/dist ./dist
 # Env variables
 ENV YT_DLP_PATH=/usr/local/bin/yt-dlp
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV DENO_DIR=/root/.deno
+ENV PATH="/root/.deno/bin:${PATH}"
 ENV PORT=5001
 ENV NODE_ENV=production
 
